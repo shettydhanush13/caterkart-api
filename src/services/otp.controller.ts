@@ -1,16 +1,12 @@
 import { Body, Controller, Post, HttpException, HttpStatus } from '@nestjs/common';
-import { ApiBody, ApiTags } from '@nestjs/swagger';
-import { sendOTPBody, verifyOTPBody } from '../config/swaggerData';
 import { OTPService } from './otp.service';
 
 @Controller('otp')
-@ApiTags('OTP')
 export class OTPController {
   constructor(private readonly otpService: OTPService) {}
 
   // Update stock for a specific apparel code and size
   @Post('send-otp')
-  @ApiBody(sendOTPBody)
   sendOTP(
     @Body() body: { phone: number },
   ) {
@@ -26,7 +22,6 @@ export class OTPController {
 
   // Update stock for multiple apparel codes and sizes
   @Post('verify-otp')
-  @ApiBody(verifyOTPBody)
   verifyOTP(
     @Body() body: { phone: number; code: string },
   ) {
