@@ -31,6 +31,12 @@ export class Orders {
   @Prop({ type: String, required: true, default: 'dhanush' })
   manager: string;
 
+  @Prop({ type: String, required: false, default: '' })
+  remarks?: string;
+
+  @Prop({ type: String, required: true })
+  date: string;
+
   /**
    * vendors is a Map keyed by:
    *  - "caterer" (for the caterer)

@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { OTPModule } from '../services/otp.module';
+import { OTPModule } from '../otp/otp.module';
 import { OrdersModule } from '../orders/orders.moudle';
+import { FoodModule } from 'src/food/food.module';
+import { ServicesModule } from './services/services.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -10,6 +12,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
   imports: [
     OTPModule,
     OrdersModule,
+    FoodModule,
+    ServicesModule,
 
     // Load environment variables from .env
     ConfigModule.forRoot({

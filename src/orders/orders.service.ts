@@ -51,8 +51,8 @@ export class OrdersService {
       const docToCreate: Record<string, any> = {
         vendors,
         payments,
-        order, // keep the exact incoming order body here
-        createdDate: new Date(),
+        order,
+        date: order.date,
       };
 
       const createdDoc = await this.orderModel.create(docToCreate as any);
