@@ -1,6 +1,7 @@
+// src/food/food.service.ts
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection } from 'mongoose';
+import { Connection, Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 
 export const categories = {
@@ -31,6 +32,30 @@ export class FoodService {
   private readonly logger = new Logger(FoodService.name);
 
   constructor(@InjectConnection() private readonly connection: Connection) {}
+
+  /**
+   * Try to convert a 24-char hex string to ObjectId, otherwise return original.
+   * Safe for already-ObjectId values as well.
+   */
+  private toObjectIdIfPossible(id: any): any {
+    if (!id && id !== 0) return id;
+
+    // If already a Types.ObjectId instance
+    if (id instanceof Types.ObjectId) return id;
+
+    // If it's a string that looks like an ObjectId
+    if (typeof id === 'string' && Types.ObjectId.isValid(id)) {
+      try {
+        return new Types.ObjectId(id);
+      } catch (e) {
+        // fallback - return original string if new fails for any reason
+        return id;
+      }
+    }
+
+    // leave other values as-is (numbers, custom strings, etc.)
+    return id;
+  }
 
   /**
    * Fetch food items filtered by area and vegOnly
@@ -113,4 +138,71 @@ export class FoodService {
       throw new InternalServerErrorException('Failed to get formatted food list');
     }
   }
+
+  async getFoodInventory(): Promise<any> {
+    const db = this.connection.db;
+    const collection = db.collection('Food');
+
+    const docs = await collection
+      .find({}, {})
+      .sort({ category: 1, subcategory: 1, itemName: 1, name: 1 })
+      .toArray();
+
+    return docs;
+  }
+
+/**
+ * Update a single item by id.
+ * - id: _id value (string or ObjectId-like)
+ * - patch: partial object of fields to update (fields with value === undefined are ignored)
+ * Returns: the updated document, or null if not found.
+ */
+async updateOneById(id: any, patch: Record<string, any>): Promise<any> {
+  try {
+    if (id === undefined || id === null) return null;
+
+    const db = this.connection.db;
+    const collection = db.collection('Food');
+
+    const actualId = this.toObjectIdIfPossible(id);
+
+    // Remove undefined fields and prevent updating _id
+    const updateFields: Record<string, any> = {};
+    if (patch && typeof patch === 'object') {
+      for (const [k, v] of Object.entries(patch)) {
+        if (k === '_id') continue;
+        if (v !== undefined) updateFields[k] = v;
+      }
+    }
+
+    // Always set updatedAt
+    updateFields.updatedAt = new Date();
+
+    // Build a filter that tries both the converted ObjectId (if any) and the raw id.
+    // This avoids misses when stored _id is a string (or when provided id is already an ObjectId).
+    const filterCandidates: any[] = [];
+    if (actualId !== undefined && actualId !== null) filterCandidates.push(actualId);
+    // also include the original id value (string or ObjectId) — ensures we match string _id docs
+    filterCandidates.push(id);
+
+    // Deduplicate filter values (stringifying to avoid duplicates)
+    const uniqueFilters = Array.from(new Map(filterCandidates.map(x => [String(x), x])).values());
+
+    const filter = uniqueFilters.length === 1 ? { _id: uniqueFilters[0] } : { _id: { $in: uniqueFilters } };
+
+    const result = await collection.findOneAndUpdate(
+      filter,
+      { $set: updateFields },
+      { returnDocument: 'after', upsert: false }
+    );
+
+    // If result.value is null it's still possible none matched; return null in that case.
+    return result?.value ?? null;
+  } catch (err) {
+    this.logger.error('Failed to update food item', err);
+    throw err; // rethrow so callers can handle — change to InternalServerErrorException if desired
+  }
+}
+
+
 }

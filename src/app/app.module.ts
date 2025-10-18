@@ -4,7 +4,7 @@ import { AppService } from './app.service';
 import { OTPModule } from '../otp/otp.module';
 import { OrdersModule } from '../orders/orders.moudle';
 import { FoodModule } from 'src/food/food.module';
-import { ServicesModule } from './services/services.module';
+import { ServicesModule } from '../services/services.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 

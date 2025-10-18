@@ -1,6 +1,6 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection } from 'mongoose';
+import { Connection, Types } from 'mongoose';
 
 @Injectable()
 export class ServicesService {
@@ -23,6 +23,7 @@ export class ServicesService {
   ): Promise<any[]> {
     try {
       const coll = this.connection.collection(collectionName);
+      if (!coll) return [];
       const docs = await coll.find({ events: searchEvent }).toArray();
       return docs;
     } catch (err) {
@@ -205,6 +206,119 @@ export class ServicesService {
     } catch (err) {
       this.logger.error('Failed to get formatted service steps', err);
       throw new InternalServerErrorException('Failed to get formatted service steps');
+    }
+  }
+
+  async getInventory(category: string): Promise<any[]> {
+    try {
+      if (!category) return [];
+
+      const key = String(category).toLowerCase().trim();
+
+      let collectionName = '';
+      if (['decoration', 'decorations', 'decor'].includes(key)) {
+        collectionName = 'Decorations';
+      } else if (['artist', 'artists'].includes(key)) {
+        collectionName = 'Artists';
+      } else if (['live-station', 'live-stations', 'livestation', 'livestations', 'live stations', 'live-station'].includes(key)) {
+        collectionName = 'LiveStations';
+      } else {
+        // unknown category -> return empty array (caller can decide)
+        this.logger.warn(`getInventory called with unknown category: ${category}`);
+        return [];
+      }
+
+      const coll = this.connection.collection(collectionName);
+      const docs = await coll.find({}).toArray();
+      return docs;
+    } catch (err) {
+      this.logger.error(`Failed to fetch inventory for category=${category}`, err);
+      throw new InternalServerErrorException('Failed to fetch inventory');
+    }
+  }
+
+  /**
+   * Map the incoming category string to the MongoDB collection name
+   */
+  private mapCategoryToCollection(category: string): string | null {
+    const key = String(category || '').toLowerCase().trim();
+    if (['decoration', 'decorations', 'decor'].includes(key)) return 'Decorations';
+    if (['artist', 'artists'].includes(key)) return 'Artists';
+    if (['live-station', 'live-stations', 'livestation', 'livestations', 'live stations', 'live-station'].includes(key)) return 'LiveStations';
+    return null;
+  }
+
+  /**
+   * Update inventory item by category and id.
+   * - category: used to determine collection
+   * - id: document _id (string or ObjectId hex)
+   * - item: object with fields to be set on the document (may include _id)
+   *
+   * Returns the updated document or null if not found.
+   */
+  async updateInventory(category: string, id: string, item: any): Promise<any> {
+    try {
+      const collectionName = this.mapCategoryToCollection(category);
+      if (!collectionName) {
+        this.logger.warn(`updateInventory called with unknown category: ${category}`);
+        throw new NotFoundException('Unknown category');
+      }
+
+      const coll = this.connection.collection(collectionName);
+      if (!coll) {
+        this.logger.error(`Collection not available: ${collectionName}`);
+        throw new InternalServerErrorException('Collection not available');
+      }
+
+      // prepare identifier: try ObjectId if looks like a 24-char hex, else use raw string
+      let queryId: any = id;
+      if (typeof id === 'string' && /^[a-fA-F0-9]{24}$/.test(id)) {
+        try {
+          queryId = new Types.ObjectId(id);
+        } catch (e) {
+          queryId = id;
+        }
+      }
+
+      // Clone the incoming payload and avoid attempting to overwrite _id with incompatible type
+      const payload = { ...item };
+      if (payload._id) delete payload._id;
+
+      // Convert vendor.serviceableArea mapping -> array if needed
+      if (payload.vendor?.serviceableArea && typeof payload.vendor.serviceableArea === 'object' && !Array.isArray(payload.vendor.serviceableArea)) {
+        payload.vendor.serviceableArea = Object.entries(payload.vendor.serviceableArea)
+          .filter(([, val]) => !!val)
+          .map(([k]) => k);
+      }
+
+      // Set updatedAt if not present
+      payload.updatedAt = new Date().toISOString();
+
+      // Build filter as any to satisfy TypeScript mongodb typings
+      const filter: any = { _id: queryId };
+
+      // Execute update
+      const result = await coll.updateOne(filter, { $set: payload });
+
+      if (result.matchedCount === 0) {
+        // If no match found, attempt to match by string id (some collections store _id as string)
+        const altFilter: any = { _id: id };
+        const altResult = await coll.updateOne(altFilter, { $set: payload });
+        if (altResult.matchedCount === 0) {
+          this.logger.warn(`No document found to update in ${collectionName} for id=${id}`);
+          return null;
+        }
+      }
+
+      // Return the fresh document (try ObjectId-based filter first, then string-based filter)
+      let updated: any = await coll.findOne(filter as any);
+      if (!updated) updated = await coll.findOne({ _id: id } as any);
+
+      return updated;
+    } catch (err) {
+      this.logger.error(`Failed to update inventory for category=${category} id=${id}`, err);
+      if (err instanceof NotFoundException) throw err;
+      throw new InternalServerErrorException('Failed to update inventory');
     }
   }
 }

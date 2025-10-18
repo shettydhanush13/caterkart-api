@@ -1,7 +1,7 @@
 import { Body, Controller, Post, HttpException, HttpStatus } from '@nestjs/common';
 import { OTPService } from './otp.service';
 
-@Controller('otp')
+@Controller('verify')
 export class OTPController {
   constructor(private readonly otpService: OTPService) {}
 
