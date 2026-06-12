@@ -1,9 +1,21 @@
-import { IsNotEmpty, IsOptional, IsString, IsBoolean, IsNumber, IsArray } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, IsBoolean, IsNumber, IsArray, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+// one supplier + the price they charge for the item
+export class VendorPriceDto {
+  @IsOptional()
+  @IsString()
+  vendor?: string;
+
+  @IsOptional()
+  @IsNumber()
+  price?: number;
+}
 
 export class UpdateFoodItemDto {
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  _id: string; // required for update
+  _id?: string; // URL param is the source of truth; body _id is optional
 
   @IsOptional()
   @IsString()
@@ -28,6 +40,12 @@ export class UpdateFoodItemDto {
   @IsOptional()
   @IsString()
   subcategory?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPriceDto)
+  vendors?: VendorPriceDto[]; // suppliers, each with own price
 
   @IsOptional()
   @IsArray()

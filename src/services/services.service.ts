@@ -1,6 +1,21 @@
-import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
+
+// Strip any keys starting with "$" or containing "." to prevent NoSQL
+// operator/path injection when mixing user-provided objects into $set.
+function sanitizeForSet(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeForSet);
+  if (typeof obj !== 'object') return obj;
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof k !== 'string') continue;
+    if (k.startsWith('$') || k.includes('.')) continue;
+    out[k] = sanitizeForSet(v);
+  }
+  return out;
+}
 
 @Injectable()
 export class ServicesService {
@@ -280,8 +295,9 @@ export class ServicesService {
         }
       }
 
-      // Clone the incoming payload and avoid attempting to overwrite _id with incompatible type
-      const payload = { ...item };
+      // Clone and sanitize the incoming payload: strip $-prefixed and
+      // dotted keys to prevent NoSQL injection, and drop _id.
+      const payload = sanitizeForSet({ ...item });
       if (payload._id) delete payload._id;
 
       // Convert vendor.serviceableArea mapping -> array if needed

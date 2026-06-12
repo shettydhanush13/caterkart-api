@@ -1,8 +1,25 @@
 // src/food/food.service.ts
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
+
+// Safe token pattern for identifiers interpolated into Mongo field paths
+// (prevents NoSQL injection via dot/operator chars in dynamic keys).
+const SAFE_AREA_KEY = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function sanitizeForSet(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeForSet);
+  if (typeof obj !== 'object') return obj;
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof k !== 'string') continue;
+    if (k.startsWith('$') || k.includes('.')) continue;
+    out[k] = sanitizeForSet(v);
+  }
+  return out;
+}
 
 export const categories = {
   Breakfast: [
@@ -71,7 +88,26 @@ export class FoodService {
 
       // Base query
       const query: Record<string, any> = { active: true };
-      if (area) query[`service.${area}`] = true;
+      if (area) {
+        if (!SAFE_AREA_KEY.test(area)) {
+          throw new BadRequestException('Invalid area');
+        }
+        // Availability now derives from the vendor: an item is available in an
+        // area if one of its vendors services that area. Legacy items still use
+        // the item-level service map as a fallback.
+        const vendorNames = (
+          await db
+            .collection('Vendors')
+            .find({ serviceAreas: area }, { projection: { name: 1 } })
+            .toArray()
+        )
+          .map((v) => v.name)
+          .filter(Boolean);
+        query.$or = [{ [`service.${area}`]: true }];
+        if (vendorNames.length) {
+          query.$or.push({ 'vendors.vendor': { $in: vendorNames } });
+        }
+      }
 
       // Only filter veg if explicitly true
       if (vegOnly === true) {
@@ -89,6 +125,7 @@ export class FoodService {
         veg: 1,
         price: 1,
         quantity: 1,
+        vendors: 1,
       };
 
       const docs = await collection
@@ -115,8 +152,14 @@ export class FoodService {
         const veg = doc.veg === true;
         const id = uuidv4();
 
+        const vendors = Array.isArray(doc.vendors)
+          ? doc.vendors
+              .map((v: any) => ({ vendor: String(v?.vendor || '').trim(), price: Number(v?.price) || 0 }))
+              .filter((v: any) => v.vendor)
+          : [];
+
         if (!menuItems[sub]) menuItems[sub] = {};
-        menuItems[sub][label] = { name: label, desc, veg, id, price };
+        menuItems[sub][label] = { name: label, desc, veg, id, price, vendors };
 
         // Track categories that have data
         if (!categoryTracker[cat]) categoryTracker[cat] = new Set();
@@ -151,6 +194,58 @@ export class FoodService {
     return docs;
   }
 
+  async getFoodInventoryList(area?: string): Promise<Record<string, Record<string, Array<{ _id: any; itemName?: string; price?: number }>>>> {
+    try {
+      const db = this.connection.db;
+      const collection = db.collection('Food');
+  
+      // Build query: if area provided, require service.<area> === true
+      const query: Record<string, any> = {};
+      if (area && typeof area === 'string' && area.trim()) {
+        if (!SAFE_AREA_KEY.test(area)) {
+          throw new BadRequestException('Invalid area');
+        }
+        query[`service.${area}`] = true;
+      }
+  
+      // Only fetch fields we need + category/subcategory for grouping
+      const projection = {
+        _id: 1,
+        itemName: 1,
+        price: 1,
+        category: 1,
+        subcategory: 1,
+      };
+  
+      const docs = await collection
+        .find(query, { projection })
+        .sort({ category: 1, subcategory: 1, itemName: 1, name: 1 })
+        .toArray();
+  
+      // Group by category -> subcategory
+      const grouped: Record<string, Record<string, Array<{ _id: any; itemName?: string; price?: number }>>> = {};
+  
+      for (const d of docs) {
+        const cat = (d.category && String(d.category)) || 'Uncategorized';
+        const sub = (d.subcategory && String(d.subcategory)) || 'Other';
+  
+        if (!grouped[cat]) grouped[cat] = {};
+        if (!grouped[cat][sub]) grouped[cat][sub] = [];
+  
+        grouped[cat][sub].push({
+          _id: d._id,
+          itemName: d.itemName,
+          price: d.price,
+        });
+      }
+  
+      return grouped;
+    } catch (err) {
+      this.logger.error('Failed to fetch filtered & grouped food inventory', err);
+      throw err;
+    }
+  }  
+
 /**
  * Update a single item by id.
  * - id: _id value (string or ObjectId-like)
@@ -166,41 +261,38 @@ async updateOneById(id: any, patch: Record<string, any>): Promise<any> {
 
     const actualId = this.toObjectIdIfPossible(id);
 
-    // Remove undefined fields and prevent updating _id
+    // Sanitize patch: drop $-keys and dotted keys, remove _id and undefined values.
+    const sanitized = sanitizeForSet(patch || {});
     const updateFields: Record<string, any> = {};
-    if (patch && typeof patch === 'object') {
-      for (const [k, v] of Object.entries(patch)) {
-        if (k === '_id') continue;
-        if (v !== undefined) updateFields[k] = v;
-      }
+    for (const [k, v] of Object.entries(sanitized)) {
+      if (k === '_id') continue;
+      if (v !== undefined) updateFields[k] = v;
     }
-
-    // Always set updatedAt
     updateFields.updatedAt = new Date();
 
-    // Build a filter that tries both the converted ObjectId (if any) and the raw id.
-    // This avoids misses when stored _id is a string (or when provided id is already an ObjectId).
     const filterCandidates: any[] = [];
     if (actualId !== undefined && actualId !== null) filterCandidates.push(actualId);
-    // also include the original id value (string or ObjectId) — ensures we match string _id docs
     filterCandidates.push(id);
-
-    // Deduplicate filter values (stringifying to avoid duplicates)
     const uniqueFilters = Array.from(new Map(filterCandidates.map(x => [String(x), x])).values());
-
     const filter = uniqueFilters.length === 1 ? { _id: uniqueFilters[0] } : { _id: { $in: uniqueFilters } };
 
-    const result = await collection.findOneAndUpdate(
+    // The MongoDB node driver v5+ returns the document directly (not { value }).
+    // Handle both shapes defensively.
+    const result: any = await collection.findOneAndUpdate(
       filter,
       { $set: updateFields },
-      { returnDocument: 'after', upsert: false }
+      { returnDocument: 'after', upsert: false },
     );
 
-    // If result.value is null it's still possible none matched; return null in that case.
-    return result?.value ?? null;
+    if (!result) return null;
+    if (typeof result === 'object' && 'value' in result) {
+      return (result as any).value ?? null;
+    }
+    return result;
   } catch (err) {
+    if (err instanceof BadRequestException) throw err;
     this.logger.error('Failed to update food item', err);
-    throw err; // rethrow so callers can handle — change to InternalServerErrorException if desired
+    throw new InternalServerErrorException('Failed to update food item');
   }
 }
 

@@ -10,6 +10,11 @@ export class FoodController {
   async getFoodInventory() {
     return this.foodService.getFoodInventory();
   }
+
+  @Get('inventory/list/:area')
+  async getFoodList(@Param('area') area: string) {
+    return this.foodService.getFoodInventoryList(area);
+  }
   
   @Get(':area')
   async getFoodByArea(

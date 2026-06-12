@@ -74,23 +74,6 @@ export class Orders {
     }
   >;
 
-  @Prop({
-    type: {
-      finalPayment: { type: Number, default: 0 },
-      vendorPayout: { type: Number, default: 0 },
-      taxes: { type: Number, default: 0 },
-      PAT: { type: Number, default: 0 },
-    },
-    required: true,
-    default: () => ({ finalPayment: 0, vendorPayout: 0, taxes: 0, PAT: 0 }),
-  })
-  payments: {
-    finalPayment: number;
-    vendorPayout: number;
-    taxes: number;
-    PAT: number;
-  };
-
   // store the incoming request body exactly here (source of truth)
   @Prop({ type: SchemaTypes.Mixed, required: true })
   order: any;
@@ -98,7 +81,9 @@ export class Orders {
 
 export const OrdersSchema = SchemaFactory.createForClass(Orders);
 
-// helpful index if you often query by status
-OrdersSchema.index({ status: 1 });
+OrdersSchema.index({ status: 1, createdAt: -1 });
+OrdersSchema.index({ manager: 1, createdAt: -1 });
+OrdersSchema.index({ createdAt: -1 });
+OrdersSchema.index({ date: 1 });
 
 export const OrdersModelName = 'Orders';

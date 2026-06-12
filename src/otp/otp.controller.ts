@@ -1,36 +1,44 @@
-import { Body, Controller, Post, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { OTPService } from './otp.service';
+import { SendOtpDto, VerifyOtpDto } from './otp.dto';
 
 @Controller('verify')
 export class OTPController {
+  private readonly logger = new Logger(OTPController.name);
+
   constructor(private readonly otpService: OTPService) {}
 
-  // Update stock for a specific apparel code and size
   @Post('send-otp')
-  sendOTP(
-    @Body() body: { phone: number },
-  ) {
+  async sendOTP(@Body() body: SendOtpDto) {
     try {
-      return this.otpService.sendOTP(body.phone);
-    } catch (error) {
+      const status = await this.otpService.sendOTP(body.phone);
+      return { status };
+    } catch (error: any) {
+      this.logger.error('send-otp failed', error?.stack || error);
       throw new HttpException(
-        `Error sending otp`,
-        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        'Failed to send OTP',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  // Update stock for multiple apparel codes and sizes
   @Post('verify-otp')
-  verifyOTP(
-    @Body() body: { phone: number; code: string },
-  ) {
+  async verifyOTP(@Body() body: VerifyOtpDto) {
     try {
-      return this.otpService.verifyOTP(body.phone, body.code);
-    } catch (error) {
+      const status = await this.otpService.verifyOTP(body.phone, body.code);
+      return { status };
+    } catch (error: any) {
+      this.logger.error('verify-otp failed', error?.stack || error);
       throw new HttpException(
-        `Error updating multiple stocks: ${error.message}`,
-        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        'Failed to verify OTP',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }

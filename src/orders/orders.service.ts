@@ -1,9 +1,25 @@
 // src/orders/orders.service.ts
-import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
 import { OrdersDocument, OrdersModelName } from './orders.schema';
+
+const ALLOWED_UPDATE_FIELDS = new Set([
+  'status',
+  'manager',
+  'remarks',
+  'vendors',
+  'payments',
+  'date',
+  'order',
+]);
 
 @Injectable()
 export class OrdersService {
@@ -16,11 +32,9 @@ export class OrdersService {
   async create(order: any): Promise<any> {
     try {
       if (!order || typeof order !== 'object') {
-        throw new InternalServerErrorException('Invalid order payload');
+        throw new BadRequestException('Invalid order payload');
       }
 
-      // Build vendors object (create fresh object per key)
-      const vendors: Record<string, any> = {};
       const vendorTemplate = () => ({
         vendor: null,
         finalPayment: 0,
@@ -29,13 +43,14 @@ export class OrdersService {
         PAT: 0,
       });
 
-      // Add caterer placeholder
-      vendors['caterer'] = vendorTemplate();
+      const vendors: Record<string, any> = { caterer: vendorTemplate() };
 
-      // Add service placeholders (if any)
       if (Array.isArray(order?.services)) {
         order.services.forEach((service: any, idx: number) => {
-          const key = service?.title || `service_${idx + 1}`;
+          const key =
+            typeof service?.title === 'string' && service.title.trim()
+              ? service.title
+              : `service_${idx + 1}`;
           vendors[key] = vendorTemplate();
         });
       }
@@ -47,7 +62,6 @@ export class OrdersService {
         PAT: 0,
       };
 
-      // Build final document to insert
       const docToCreate: Record<string, any> = {
         vendors,
         payments,
@@ -56,88 +70,121 @@ export class OrdersService {
       };
 
       const createdDoc = await this.orderModel.create(docToCreate as any);
-
-      // Return plain JS object
       const plain =
         typeof (createdDoc as any).toObject === 'function'
           ? (createdDoc as any).toObject()
           : createdDoc;
 
-      this.logger.debug(`Order saved: ${plain?._id ?? '[no-id]'} status=${plain?.status}`);
+      this.logger.debug(`Order saved: ${plain?._id ?? '[no-id]'}`);
       return plain;
     } catch (err) {
+      if (err instanceof BadRequestException) throw err;
       this.logger.error('Failed to store order', err);
       throw new InternalServerErrorException('Failed to store order');
     }
   }
 
-  /**
-   * Return all orders as plain objects.
-   *
-   * Note: using `as unknown as any[]` prevents TS from expanding Mongoose's complex
-   * union return type (TS2590).
-   */
-  async findAll(): Promise<any[]> {
+  async findAll(opts: { page?: number; limit?: number; status?: string } = {}): Promise<{
+    data: any[];
+    page: number;
+    limit: number;
+    total: number;
+  }> {
+    const page = Math.max(1, Number(opts.page) || 1);
+    const limit = Math.min(200, Math.max(1, Number(opts.limit) || 50));
+    const filter: Record<string, any> = {};
+    if (opts.status && typeof opts.status === 'string') {
+      filter.status = opts.status;
+    }
+
     try {
-      const results = await this.orderModel.find().sort({ createdDate: -1 });
-      return results;
+      const [data, total] = await Promise.all([
+        (this.orderModel as any)
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean()
+          .exec() as Promise<any[]>,
+        this.orderModel.countDocuments(filter).exec(),
+      ]);
+      return { data: data as any[], page, limit, total };
     } catch (err) {
       this.logger.error('Failed to fetch all orders', err);
       throw new InternalServerErrorException('Failed to fetch orders');
     }
   }
 
-  /**
-   * Return single order by Mongo _id (string).
-   */
   async findById(id: string): Promise<any | null> {
+    if (!Types.ObjectId.isValid(id)) return null;
     try {
-      if (!Types.ObjectId.isValid(id)) {
-        return null;
-      }
-      const result = await this.orderModel.findById(id);
-      return result;
+      return await (this.orderModel as any).findById(id).lean().exec();
     } catch (err) {
       this.logger.error(`Failed to fetch order by id ${id}`, err);
       throw new InternalServerErrorException('Failed to fetch order');
     }
   }
-/**
-   * Replace the stored order document with `body`.
-   * - `body` is treated as the top-level document to store.
-   * - we preserve timestamps handled by mongoose; returning the updated document.
-   */
-  async update(id: string, body: any): Promise<any> {
-    try {
-      if (!body || typeof body !== 'object') {
-        throw new InternalServerErrorException('Invalid payload for update');
-      }
 
-      // find if exists first (optional, but lets us return NotFound cleanly)
-      const exists = await (this.orderModel as any).findById(id).lean().exec();
-      if (!exists) {
-        // caller/controller will convert this to 404
+  /** Orders whose customer phone matches the given number (last 10 digits). */
+  async findByPhone(phone: string): Promise<any[]> {
+    const digits = String(phone || '').replace(/\D/g, '');
+    const last10 = digits.slice(-10);
+    if (last10.length !== 10) {
+      throw new BadRequestException('A valid 10-digit phone number is required');
+    }
+    try {
+      const re = new RegExp(`${last10}$`);
+      const docs = await (this.orderModel as any)
+        .find({
+          $or: [
+            { 'order.customerData.phone': re },
+            { 'order.customer.phone': re },
+            { 'customerData.phone': re },
+          ],
+        })
+        .sort({ createdAt: -1, _id: -1 })
+        .lean()
+        .exec();
+      return docs || [];
+    } catch (err) {
+      this.logger.error(`Failed to fetch orders for phone`, err);
+      throw new InternalServerErrorException('Failed to fetch orders');
+    }
+  }
+
+  async update(id: string, body: any): Promise<any | null> {
+    if (!Types.ObjectId.isValid(id)) return null;
+    if (!body || typeof body !== 'object') {
+      throw new BadRequestException('Invalid payload for update');
+    }
+
+    // Whitelist allowed fields to prevent mass-assignment.
+    const sanitized: Record<string, any> = {};
+    for (const [k, v] of Object.entries(body)) {
+      if (ALLOWED_UPDATE_FIELDS.has(k)) sanitized[k] = v;
+    }
+
+    if (Object.keys(sanitized).length === 0) {
+      throw new BadRequestException('No updatable fields in payload');
+    }
+
+    try {
+      // Atomic: single op, no read-then-write race.
+      const updated = await (this.orderModel as any)
+        .findByIdAndUpdate(id, { $set: sanitized }, { new: true, runValidators: true })
+        .lean()
+        .exec();
+
+      if (!updated) {
         throw new NotFoundException(`Order with id ${id} not found`);
       }
 
-      // We want to fully replace the stored document with the provided body.
-      // Using findByIdAndUpdate with $set to replace top-level fields.
-      // NOTE: this will not remove _id or mongoose timestamps; if you truly want to replace the whole Mongo doc,
-      // you'd need a delete+insert — but typically updating fields is preferred.
-      const updated = await (this.orderModel as any).findByIdAndUpdate(
-        id,
-        { $set: body },
-        { new: true, lean: true, runValidators: false }, // return the updated doc
-      ).exec();
-
-      // updated should be the fresh object
       this.logger.debug(`Order updated: ${id}`);
       return updated;
     } catch (err) {
-      this.logger.error('Failed to update order', err);
       if (err instanceof NotFoundException) throw err;
+      this.logger.error('Failed to update order', err);
       throw new InternalServerErrorException('Failed to update order');
     }
   }
 }
-
