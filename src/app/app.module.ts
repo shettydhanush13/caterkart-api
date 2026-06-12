@@ -8,6 +8,7 @@ import { ServicesModule } from '../services/services.module';
 import { CombosModule } from '../combos/combos.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { AdminsModule } from '../admins/admins.module';
+import { PincodesModule } from '../pincodes/pincodes.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -20,6 +21,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     CombosModule,
     VendorsModule,
     AdminsModule,
+    PincodesModule,
 
     // Load environment variables from .env
     ConfigModule.forRoot({
