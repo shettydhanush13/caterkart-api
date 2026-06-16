@@ -1,5 +1,5 @@
 // src/food/food.service.ts
-import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
@@ -45,10 +45,59 @@ export const categories = {
 };
 
 @Injectable()
-export class FoodService {
+export class FoodService implements OnModuleInit {
   private readonly logger = new Logger(FoodService.name);
 
   constructor(@InjectConnection() private readonly connection: Connection) {}
+
+  // Mongoose types `connection.db` as possibly undefined (until connected). All
+  // queries run after bootstrap, so assert it once here instead of everywhere.
+  private get db() {
+    const db = this.connection.db;
+    if (!db) throw new InternalServerErrorException('Database not connected');
+    return db;
+  }
+
+  // One-time migration to the per-vendor menu model: split any legacy item that
+  // carries a vendors[] array into one item per vendor (vendor + price), then
+  // drop the array. Idempotent — only touches docs that still have vendors[].
+  async onModuleInit(): Promise<void> {
+    try {
+      const collection = this.db.collection('Food');
+      const legacy = await collection.find({ vendors: { $exists: true, $type: 'array', $ne: [] } }).toArray();
+      if (!legacy.length) return;
+      let split = 0;
+      for (const doc of legacy) {
+        const rows = (doc.vendors || [])
+          .map((v: any) => ({ vendor: String(v?.vendor || '').trim(), price: Number(v?.price) || 0 }))
+          .filter((v: any) => v.vendor);
+        if (!rows.length) {
+          await collection.updateOne({ _id: doc._id }, { $unset: { vendors: '' } });
+          continue;
+        }
+        // first vendor stays on the original doc
+        await collection.updateOne(
+          { _id: doc._id },
+          { $set: { vendor: rows[0].vendor, price: rows[0].price }, $unset: { vendors: '' } },
+        );
+        // each additional vendor becomes its own item
+        for (let i = 1; i < rows.length; i++) {
+          const { _id, ...rest } = doc;
+          delete (rest as any).vendors;
+          await collection.insertOne({
+            ...rest,
+            vendor: rows[i].vendor,
+            price: rows[i].price,
+            createdAt: new Date(),
+          } as any);
+          split++;
+        }
+      }
+      this.logger.log(`Per-vendor migration done: ${legacy.length} items normalised, ${split} cloned.`);
+    } catch (err) {
+      this.logger.error('Per-vendor migration failed', err);
+    }
+  }
 
   /**
    * Try to convert a 24-char hex string to ObjectId, otherwise return original.
@@ -83,7 +132,7 @@ export class FoodService {
     vegOnly?: boolean,
   ): Promise<{ categories: Record<string, string[]>; menuItems: any }> {
     try {
-      const db = this.connection.db;
+      const db = this.db;
       const collection = db.collection('Food');
 
       // Base query
@@ -105,7 +154,8 @@ export class FoodService {
           .filter(Boolean);
         query.$or = [{ [`service.${area}`]: true }];
         if (vendorNames.length) {
-          query.$or.push({ 'vendors.vendor': { $in: vendorNames } });
+          query.$or.push({ vendor: { $in: vendorNames } });
+          query.$or.push({ 'vendors.vendor': { $in: vendorNames } }); // legacy
         }
       }
 
@@ -125,7 +175,8 @@ export class FoodService {
         veg: 1,
         price: 1,
         quantity: 1,
-        vendors: 1,
+        vendor: 1,
+        vendors: 1, // legacy fallback
       };
 
       const docs = await collection
@@ -148,18 +199,17 @@ export class FoodService {
 
         const label = doc.itemName || doc.name || '';
         const desc = doc.desc || doc.quantity || '';
-        const price = Number(doc.price) || 0;
         const veg = doc.veg === true;
         const id = uuidv4();
 
-        const vendors = Array.isArray(doc.vendors)
-          ? doc.vendors
-              .map((v: any) => ({ vendor: String(v?.vendor || '').trim(), price: Number(v?.price) || 0 }))
-              .filter((v: any) => v.vendor)
-          : [];
+        // per-vendor menu: each item belongs to one vendor (legacy items fall
+        // back to the first entry of the old vendors[] array).
+        const legacy = Array.isArray(doc.vendors) && doc.vendors[0] ? doc.vendors[0] : null;
+        const vendor = String(doc.vendor || legacy?.vendor || '').trim();
+        const price = Number(doc.price) || Number(legacy?.price) || 0;
 
         if (!menuItems[sub]) menuItems[sub] = {};
-        menuItems[sub][label] = { name: label, desc, veg, id, price, vendors };
+        menuItems[sub][label] = { name: label, desc, veg, id, price, vendor };
 
         // Track categories that have data
         if (!categoryTracker[cat]) categoryTracker[cat] = new Set();
@@ -168,9 +218,10 @@ export class FoodService {
 
       // ✅ Include only categories/subcategories that actually have data
       const filteredCategories: Record<string, string[]> = {};
-      for (const cat of Object.keys(categories)) {
-        const validSubs = categories[cat].filter(
-          (sub) => categoryTracker[cat]?.has(sub),
+      const cats = categories as Record<string, string[]>;
+      for (const cat of Object.keys(cats)) {
+        const validSubs = cats[cat].filter(
+          (sub: string) => categoryTracker[cat]?.has(sub),
         );
         if (validSubs.length > 0) filteredCategories[cat] = validSubs;
       }
@@ -183,7 +234,7 @@ export class FoodService {
   }
 
   async getFoodInventory(): Promise<any> {
-    const db = this.connection.db;
+    const db = this.db;
     const collection = db.collection('Food');
 
     const docs = await collection
@@ -196,7 +247,7 @@ export class FoodService {
 
   async getFoodInventoryList(area?: string): Promise<Record<string, Record<string, Array<{ _id: any; itemName?: string; price?: number }>>>> {
     try {
-      const db = this.connection.db;
+      const db = this.db;
       const collection = db.collection('Food');
   
       // Build query: if area provided, require service.<area> === true
@@ -256,7 +307,7 @@ async updateOneById(id: any, patch: Record<string, any>): Promise<any> {
   try {
     if (id === undefined || id === null) return null;
 
-    const db = this.connection.db;
+    const db = this.db;
     const collection = db.collection('Food');
 
     const actualId = this.toObjectIdIfPossible(id);

@@ -1,15 +1,18 @@
 import { Controller, Get, Param, Put, Body, NotFoundException } from '@nestjs/common';
 import { ServicesService } from './services.service';
+import { Public, Staff } from '../auth/decorators';
 
 @Controller('services')
 export class ServicesController {
   constructor(private readonly servicesService: ServicesService) {}
 
+  @Public()
   @Get('inventory/:category')
   async getInventory(@Param('category') category: string) {
     return this.servicesService.getInventory(category);
   }
 
+  @Staff()
   @Put('inventory/:category/:id')
   async updateInventoryItem(
     @Param('category') category: string,
@@ -21,6 +24,7 @@ export class ServicesController {
     return updated;
   }
 
+  @Public()
   @Get(':eventName')
   async getServicesByEvent(@Param('eventName') eventName: string) {
     return this.servicesService.getServicesByEvent(eventName);

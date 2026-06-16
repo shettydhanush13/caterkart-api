@@ -3,27 +3,16 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, Types } from 'mongoose';
+import { Connection } from 'mongoose';
+import { normalizePhone, toObjectId } from '../common/utils';
 
 const COLLECTION = 'Admins';
 
 // Bootstrap admin(s) — always treated as full admin and cannot be removed.
 const CORE_ADMINS = ['8971780778'];
-
-const toObjectId = (id: string): any => {
-  try {
-    if (Types.ObjectId.isValid(id)) return new Types.ObjectId(id);
-  } catch {
-    /* fall through */
-  }
-  return id;
-};
-
-// keep only the last 10 digits (drops +91 / spaces / dashes)
-const normalizePhone = (p: any): string =>
-  String(p || '').replace(/\D/g, '').slice(-10);
 
 export type AdminType = 'admin' | 'vendor';
 
@@ -36,13 +25,23 @@ export interface AdminProfile {
 }
 
 @Injectable()
-export class AdminsService {
+export class AdminsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AdminsService.name);
 
   constructor(@InjectConnection() private readonly connection: Connection) {}
 
   private get coll() {
     return this.connection.collection(COLLECTION);
+  }
+
+  // Seed the bootstrap admin(s) once at boot rather than on every list() call.
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      await this.connection.asPromise();
+      await this.ensureCore();
+    } catch (err) {
+      this.logger.error('Failed to ensure core admin', err);
+    }
   }
 
   private async ensureCore(): Promise<void> {
@@ -88,7 +87,6 @@ export class AdminsService {
 
   async list(): Promise<any[]> {
     try {
-      await this.ensureCore();
       return await this.coll.find({}).sort({ createdAt: 1 }).toArray();
     } catch (err) {
       this.logger.error('Failed to list admins', err);

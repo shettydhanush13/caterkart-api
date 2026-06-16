@@ -3,20 +3,13 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, Types } from 'mongoose';
+import { Connection } from 'mongoose';
+import { toObjectId } from '../common/utils';
 
 const COLLECTION = 'Pincodes';
-
-const toObjectId = (id: string): any => {
-  try {
-    if (Types.ObjectId.isValid(id)) return new Types.ObjectId(id);
-  } catch {
-    /* fall through */
-  }
-  return id;
-};
 
 const normalizePincode = (p: any): string => String(p || '').replace(/\D/g, '').slice(0, 6);
 
@@ -48,8 +41,12 @@ function buildBangaloreSeed(): Array<{ pincode: string; area: string }> {
 }
 
 @Injectable()
-export class PincodesService {
+export class PincodesService implements OnApplicationBootstrap {
   private readonly logger = new Logger(PincodesService.name);
+
+  // Cached after boot so the inline serviceability check (fired per keystroke)
+  // never round-trips just to learn whether the feature is configured yet.
+  private configured = false;
 
   constructor(@InjectConnection() private readonly connection: Connection) {}
 
@@ -57,14 +54,21 @@ export class PincodesService {
     return this.connection.collection(COLLECTION);
   }
 
-  // seed Bengaluru pincodes once, only when the collection is empty
-  private async ensureSeeded(): Promise<void> {
+  // Seed Bengaluru pincodes once at boot (only when the collection is empty),
+  // then cache whether the collection has any data. Runs off the request path.
+  async onApplicationBootstrap(): Promise<void> {
     try {
-      const count = await this.coll.estimatedDocumentCount();
-      if (count > 0) return;
-      const now = new Date();
-      const docs = buildBangaloreSeed().map((d) => ({ ...d, city: 'Bengaluru', active: true, createdAt: now }));
-      if (docs.length) await this.coll.insertMany(docs as any, { ordered: false }).catch(() => undefined);
+      await this.connection.asPromise();
+      let count = await this.coll.estimatedDocumentCount();
+      if (count === 0) {
+        const now = new Date();
+        const docs = buildBangaloreSeed().map((d) => ({ ...d, city: 'Bengaluru', active: true, createdAt: now }));
+        if (docs.length) {
+          await this.coll.insertMany(docs as any, { ordered: false }).catch(() => undefined);
+          count = docs.length;
+        }
+      }
+      this.configured = count > 0;
     } catch (err) {
       this.logger.error('Failed to seed pincodes', err);
     }
@@ -81,7 +85,6 @@ export class PincodesService {
 
   async list(): Promise<any[]> {
     try {
-      await this.ensureSeeded();
       return await this.coll.find({}).sort({ area: 1, pincode: 1 }).toArray();
     } catch (err) {
       this.logger.error('Failed to list pincodes', err);
@@ -99,6 +102,7 @@ export class PincodesService {
         { $set: doc, $setOnInsert: { createdAt: new Date() } },
         { upsert: true },
       );
+      this.configured = true;
       return await this.coll.findOne({ pincode: doc.pincode });
     } catch (err) {
       this.logger.error('Failed to create pincode', err);
@@ -141,10 +145,8 @@ export class PincodesService {
     const empty = { pincode: p, serviceable: false, area: '', vendorCount: 0, vendors: [] as string[] };
     if (p.length !== 6) return empty;
     try {
-      await this.ensureSeeded();
       // until any pincodes are configured, don't block orders (feature not set up yet)
-      const total = await this.coll.estimatedDocumentCount();
-      if (total === 0) return { ...empty, serviceable: true, notConfigured: true };
+      if (!this.configured) return { ...empty, serviceable: true, notConfigured: true };
 
       const doc = await this.coll.findOne({ pincode: p });
       if (!doc || doc.active === false || !doc.area) return empty;

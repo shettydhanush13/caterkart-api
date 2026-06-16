@@ -5,30 +5,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, Types } from 'mongoose';
-
-// Strip keys that could be used for NoSQL operator/path injection.
-function sanitize(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
-  if (Array.isArray(obj)) return obj.map(sanitize);
-  if (typeof obj !== 'object') return obj;
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof k !== 'string') continue;
-    if (k.startsWith('$') || k.includes('.')) continue;
-    out[k] = sanitize(v);
-  }
-  return out;
-}
-
-const toObjectId = (id: string): any => {
-  try {
-    if (Types.ObjectId.isValid(id)) return new Types.ObjectId(id);
-  } catch {
-    /* fall through */
-  }
-  return id;
-};
+import { Connection } from 'mongoose';
+import { sanitizeDeep as sanitize, toObjectId } from '../common/utils';
 
 const COLLECTION = 'Combos';
 

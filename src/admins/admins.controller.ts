@@ -7,7 +7,10 @@ import {
   Post,
 } from '@nestjs/common';
 import { AdminsService } from './admins.service';
+import { CreateAdminDto } from './admins.dto';
+import { Staff } from '../auth/decorators';
 
+@Staff()
 @Controller('admins')
 export class AdminsController {
   constructor(private readonly admins: AdminsService) {}
@@ -28,7 +31,7 @@ export class AdminsController {
   }
 
   @Post()
-  create(@Body() body: Record<string, any>) {
+  create(@Body() body: CreateAdminDto) {
     return this.admins.create(body);
   }
 

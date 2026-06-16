@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { UpdateOrderDto, ListOrdersQueryDto } from './orders.dto';
+import { Public, Staff } from '../auth/decorators';
 
 @Controller('order')
 export class OrdersController {
@@ -22,6 +23,7 @@ export class OrdersController {
 
   constructor(private readonly ordersService: OrdersService) {}
 
+  @Public()
   @Post('')
   async createOrder(@Body() body: Record<string, any>) {
     // Typed as a plain object so the global ValidationPipe (whitelist +
@@ -36,6 +38,7 @@ export class OrdersController {
     }
   }
 
+  @Staff()
   @Get('')
   async getAllOrders(@Query() query: ListOrdersQueryDto) {
     try {
@@ -47,6 +50,7 @@ export class OrdersController {
     }
   }
 
+  @Public()
   @Get('track/:phone')
   async trackByPhone(@Param('phone') phone: string) {
     try {
@@ -58,6 +62,7 @@ export class OrdersController {
     }
   }
 
+  @Public()
   @Get(':id')
   async getOrderById(@Param('id') id: string) {
     try {
@@ -71,6 +76,46 @@ export class OrdersController {
     }
   }
 
+  @Staff()
+  @Post(':id/invoice')
+  async assignInvoice(@Param('id') id: string) {
+    // Allocate (once) and return the order's sequential GST invoice number.
+    try {
+      return await this.ordersService.assignInvoice(id);
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      this.logger.error(`assignInvoice failed for ${id}`, error?.stack || error);
+      throw new HttpException('Failed to assign invoice number', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Staff()
+  @Post(':id/commission-invoice')
+  async assignCommissionInvoice(@Param('id') id: string) {
+    // Allocate (once) the vendor commission tax-invoice number (series COM).
+    try {
+      return await this.ordersService.assignCommissionInvoice(id);
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      this.logger.error(`assignCommissionInvoice failed for ${id}`, error?.stack || error);
+      throw new HttpException('Failed to assign commission invoice number', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Staff()
+  @Post(':id/payout')
+  async assignPayoutNo(@Param('id') id: string) {
+    // Allocate (once) the vendor payout-statement number (series PAY).
+    try {
+      return await this.ordersService.assignPayoutNo(id);
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      this.logger.error(`assignPayoutNo failed for ${id}`, error?.stack || error);
+      throw new HttpException('Failed to assign payout number', HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  @Staff()
   @Put(':id')
   async replaceOrder(@Param('id') id: string, @Body() body: UpdateOrderDto) {
     // UpdateOrderDto whitelists the editable fields (status [enum-validated],

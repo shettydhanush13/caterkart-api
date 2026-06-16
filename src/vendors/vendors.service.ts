@@ -5,33 +5,15 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, Types } from 'mongoose';
+import { Connection } from 'mongoose';
 import { AdminsService } from '../admins/admins.service';
-
-// Strip keys that could be used for NoSQL operator/path injection.
-function sanitize(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
-  if (Array.isArray(obj)) return obj.map(sanitize);
-  if (typeof obj !== 'object') return obj;
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof k !== 'string') continue;
-    if (k.startsWith('$') || k.includes('.')) continue;
-    out[k] = sanitize(v);
-  }
-  return out;
-}
-
-const toObjectId = (id: string): any => {
-  try {
-    if (Types.ObjectId.isValid(id)) return new Types.ObjectId(id);
-  } catch {
-    /* fall through */
-  }
-  return id;
-};
+import { sanitizeDeep as sanitize, toObjectId } from '../common/utils';
 
 const COLLECTION = 'Vendors';
+
+// Case-insensitive collation — equality matches use the `name_ci` index
+// (a `$regex`/`$options:i` scan cannot).
+const CI = { locale: 'en', strength: 2 } as const;
 
 @Injectable()
 export class VendorsService {
@@ -52,6 +34,12 @@ export class VendorsService {
     return [];
   }
 
+  // clamp a commission percentage to 0–100
+  private pct(v: any): number {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
+  }
+
   private normalize(data: Record<string, any>): Record<string, any> {
     const doc = sanitize(data) || {};
     delete doc._id;
@@ -61,8 +49,14 @@ export class VendorsService {
     doc.area = String(doc.area || '').trim();
     doc.notes = String(doc.notes || '').trim();
     doc.fssaiNumber = String(doc.fssaiNumber || '').trim();
+    // tax/billing details — used as the supplier of record on GST invoices
+    doc.gstin = String(doc.gstin || '').trim().toUpperCase();
+    doc.address = String(doc.address || '').trim();
     // regions this vendor can deliver to (moved here from the food item)
     doc.serviceAreas = this.toList(doc.serviceAreas);
+    // CaterKart commission % (per onboarding agreement), separate per product line
+    doc.caterboxCommissionPct = this.pct(doc.caterboxCommissionPct);
+    doc.buffetCommissionPct = this.pct(doc.buffetCommissionPct);
     if (doc.active === undefined) doc.active = true;
     return doc;
   }
@@ -73,6 +67,33 @@ export class VendorsService {
     } catch (err) {
       this.logger.error('Failed to list vendors', err);
       throw new InternalServerErrorException('Failed to list vendors');
+    }
+  }
+
+  // customer-safe profile by name (FSSAI, areas, kitchen media — no PII)
+  async publicByName(name: string): Promise<any> {
+    const n = String(name || '').trim();
+    if (!n) return null;
+    try {
+      const v = await this.coll.findOne({ name: n }, { collation: CI } as any);
+      if (!v) return null;
+      return {
+        name: v.name,
+        fssaiNumber: v.fssaiNumber || '',
+        gstin: v.gstin || '',       // supplier-of-record details for the tax invoice
+        address: v.address || '',
+        serviceAreas: v.serviceAreas || [],
+        city: v.city || '',
+        kitchenPhotos: Array.isArray(v.kitchenPhotos) ? v.kitchenPhotos : [],
+        kitchenVideos: Array.isArray(v.kitchenVideos) ? v.kitchenVideos : [],
+        ratingAverage: Number(v.ratingAverage) || 0,
+        ratingCount: Number(v.ratingCount) || 0,
+        googleRating: Number(v.googleRating) || 0, // reserved for future Google import
+        googleReviewCount: Number(v.googleReviewCount) || 0,
+      };
+    } catch (err) {
+      this.logger.error('Failed public vendor lookup', err);
+      return null;
     }
   }
 

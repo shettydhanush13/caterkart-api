@@ -42,10 +42,14 @@ export class UpdateFoodItemDto {
   subcategory?: string;
 
   @IsOptional()
+  @IsString()
+  vendor?: string; // per-vendor menu: the single owner of this item
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => VendorPriceDto)
-  vendors?: VendorPriceDto[]; // suppliers, each with own price
+  vendors?: VendorPriceDto[]; // legacy (pre per-vendor migration)
 
   @IsOptional()
   @IsArray()

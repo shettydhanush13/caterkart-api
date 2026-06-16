@@ -74,6 +74,16 @@ export class Orders {
     }
   >;
 
+  // Sequential GST invoice numbers, assigned once by the server (never client-set).
+  @Prop({ type: String, required: false, index: true })
+  invoiceNo?: string;        // customer food tax invoice (series ORD)
+
+  @Prop({ type: String, required: false, index: true })
+  commissionInvoiceNo?: string; // vendor commission tax invoice (series COM)
+
+  @Prop({ type: String, required: false, index: true })
+  payoutNo?: string;         // vendor payout statement (series PAY)
+
   // store the incoming request body exactly here (source of truth)
   @Prop({ type: SchemaTypes.Mixed, required: true })
   order: any;

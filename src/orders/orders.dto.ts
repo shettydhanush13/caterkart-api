@@ -31,6 +31,7 @@ export const ALLOWED_ORDER_STATUSES = [
   'confirmed',
   'contacted',
   'in_progress',
+  'advance paid',
   'delivered',
   'completed',
   'cancelled',
